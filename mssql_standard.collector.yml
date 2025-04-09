@@ -1,0 +1,387 @@
+collector_name: mssql_standard
+metrics:
+  - metric_name: sql_jobs_total
+    type: gauge
+    help: Total number of SQL Server Agent jobs
+    values:
+      - JobCount
+    query: |
+      SELECT COUNT(*) AS JobCount
+      FROM msdb.dbo.sysjobs
+  - metric_name: sql_jobs_last_run_status
+    type: gauge
+    help: Last run status of SQL Server Agent jobs (1=Succeeded, 0=Failed, 2=Unknown)
+    key_labels:
+      - JobName
+    values:
+      - LastRunStatus
+    query: |
+      SELECT j.name AS JobName,
+             CASE
+               WHEN h.run_status = 1 THEN 1  -- Succeeded
+               WHEN h.run_status = 0 THEN 0  -- Failed
+               ELSE 2  -- Unknown
+             END AS LastRunStatus
+      FROM msdb.dbo.sysjobs j
+      LEFT JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id
+      WHERE h.instance_id = (
+        SELECT MAX(instance_id)
+        FROM msdb.dbo.sysjobhistory
+        WHERE job_id = j.job_id
+      )
+  - metric_name: sql_jobs_failed_count
+    type: counter
+    help: Count of failed SQL Server Agent jobs
+    values:
+      - JobCount
+    query: |
+      SELECT COUNT(*) AS JobCount
+      FROM msdb.dbo.sysjobhistory
+      WHERE run_status = 0
+        AND run_date = (
+          SELECT MAX(run_date)
+          FROM msdb.dbo.sysjobhistory
+        )
+  - metric_name: sql_jobs_pending_count
+    type: gauge
+    help: Count of pending SQL Server Agent jobs
+    values:
+      - JobCount
+    query: |
+      SELECT COUNT(*) AS JobCount
+      FROM msdb.dbo.sysjobs
+      WHERE enabled = 1
+        AND job_id NOT IN (
+          SELECT job_id
+          FROM msdb.dbo.sysjobhistory
+          WHERE run_status = 1 OR run_status = 0
+        )
+  - metric_name: sql_jobs_last_run_duration
+    type: gauge
+    help: Last run duration (in seconds) of SQL Server Agent jobs
+    key_labels:
+      - JobName
+    values:
+      - LastRunDuration
+    query: |
+      SELECT j.name AS JobName,
+             DATEDIFF(SECOND, h.run_date, h.run_duration) AS LastRunDuration
+      FROM msdb.dbo.sysjobs j
+      LEFT JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id
+      WHERE h.instance_id = (
+        SELECT MAX(instance_id)
+        FROM msdb.dbo.sysjobhistory
+        WHERE job_id = j.job_id
+      )
+  - metric_name: sql_job_details
+    type: gauge
+    help: Detailed run information for test_job1 and test_job2
+    key_labels:
+      - JobName
+      - StepName
+      - RunDate
+      - RunTime
+    values:
+      - RunStatus
+      - RunDuration
+    value_label: RunDuration
+    query: |
+      SELECT
+        j.name AS JobName,
+        s.step_name AS StepName,
+        h.run_date AS RunDate,
+        h.run_time AS RunTime,
+        h.run_status AS RunStatus,
+        h.run_duration AS RunDuration
+      FROM msdb.dbo.sysjobs j
+      JOIN msdb.dbo.sysjobsteps s ON j.job_id = s.job_id
+      JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id
+       AND s.step_id = h.step_id
+      WHERE j.name IN ('test_job1','test job2')
+      ORDER BY h.run_date DESC, h.run_time DESC
+  - metric_name: sql_db_total_size_mb
+    type: gauge
+    help: Total size of each database in MB
+    key_labels:
+      - DatabaseName
+    values:
+      - TotalSizeMB
+    query: |
+      SELECT
+        DB_NAME(database_id) AS DatabaseName,
+        SUM(size * 8 / 1024) AS TotalSizeMB
+      FROM sys.master_files
+      GROUP BY database_id
+  - metric_name: sql_db_used_space_mb
+    type: gauge
+    help: Used space of each database in MB
+    key_labels:
+      - DatabaseName
+    values:
+      - UsedSpaceMB
+    query: |
+      SELECT
+        DB_NAME(database_id) AS DatabaseName,
+        SUM(FILEPROPERTY(name, 'SpaceUsed') * 8 / 1024) AS UsedSpaceMB
+      FROM sys.master_files
+      GROUP BY database_id
+  - metric_name: sql_instance_cpu_utilization_percent
+    type: gauge
+    help: CPU utilization percent of SQL Server instance
+    values:
+      - CpuUsage
+    query: |
+      SELECT sqlserver.os_cpu_percent AS CpuUsage
+      FROM sys.dm_os_sys_info sqlserver
+  - metric_name: sql_instance_memory_utilization_percent
+    type: gauge
+    help: Memory utilization percent of SQL Server instance
+    values:
+      - MemoryUtilizationPercent
+    query: >
+      SELECT sqlserver.sql_memory_utilization_percent() AS
+      MemoryUtilizationPercent
+
+      FROM sys.dm_os_sys_info sqlserver
+  - metric_name: sql_instance_io_utilization_percent
+    type: gauge
+    help: Disk I/O utilization percent of SQL Server instance
+    values:
+      - IoUtilizationPercent
+    query: |
+      SELECT sqlserver.io_utilization_percent() AS IoUtilizationPercent
+      FROM sys.dm_os_sys_info sqlserver
+  - metric_name: sql_query_active_count
+    type: gauge
+    help: Number of active queries running in SQL Server
+    values:
+      - ActiveQueries
+    query: |
+      SELECT
+        DB_NAME(database_id) AS DatabaseName,
+        COUNT(query_plan) AS ActiveQueries
+      FROM sys.dm_exec_requests
+      GROUP BY database_id
+  - metric_name: sql_index_fragmentation
+    type: gauge
+    help: Level of fragmentation for each index
+    key_labels:
+      - TableName
+      - IndexName
+    values:
+      - avg_fragmentation_in_percent
+    query: >
+      SELECT
+        OBJECT_NAME(IXOS.OBJECT_ID) AS TableName,
+        IX.name AS IndexName,
+        IXOS.avg_fragmentation_in_percent
+      FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'LIMITED') AS IXOS
+
+      INNER JOIN sys.indexes AS IX ON IX.OBJECT_ID = IXOS.OBJECT_ID
+
+      WHERE IX.type_desc = 'CLUSTERED'
+  - metric_name: sql_transaction_active_count
+    type: gauge
+    help: Number of active transactions in SQL Server
+    values:
+      - TransactionCount
+    query: |
+      SELECT
+        COUNT(*) AS TransactionCount
+      FROM sys.dm_tran_database_transactions
+      WHERE transaction_state = 1  -- Active transactions
+  - metric_name: sql_tempdb_size_mb
+    type: gauge
+    help: Total size of TempDB in MB
+    values:
+      - TempDBSizeMB
+    query: |
+      SELECT
+        SUM(size * 8 / 1024) AS TempDBSizeMB
+      FROM tempdb.sys.master_files
+  - metric_name: sql_tempdb_used_mb
+    type: gauge
+    help: Used space of TempDB in MB
+    values:
+      - TempDBUsedMB
+    query: |
+      SELECT
+        SUM(FILEPROPERTY(name, 'SpaceUsed') * 8 / 1024) AS TempDBUsedMB
+      FROM tempdb.sys.master_files
+  - metric_name: sql_deadlock_count
+    type: counter
+    help: Count of deadlocks detected
+    values:
+      - DeadlockCount
+    query: |
+      SELECT COUNT(*) AS DeadlockCount
+      FROM sys.dm_exec_requests
+      WHERE blocking_session_id <> 0
+  - metric_name: sql_lock_wait_count
+    type: counter
+    help: Number of lock waits in SQL Server
+    values:
+      - LockWaitCount
+    query: |
+      SELECT COUNT(*) AS LockWaitCount
+      FROM sys.dm_exec_requests
+      WHERE wait_type <> 'LCX_CHECKPOINT' AND wait_type <> 'NULL'
+  - metric_name: sql_backup_last_completed
+    type: gauge
+    help: Timestamp of the last backup completion
+    values:
+      - LastBackupTime
+    query: |
+      SELECT MAX(backup_finish_date) AS LastBackupTime
+      FROM msdb.dbo.backupset
+      WHERE type = 'D'  -- Full backups
+  - metric_name: sql_jobs_total
+    type: gauge
+    help: Total number of SQL Server Agent jobs
+    values:
+      - JobCount
+    query: |
+      SELECT COUNT(*) AS JobCount FROM msdb.dbo.sysjobs;
+  - metric_name: sql_jobs_enabled_total
+    type: gauge
+    help: Total number of enabled SQL Server Agent jobs
+    values:
+      - EnabledJobCount
+    query: >
+      SELECT COUNT(*) AS EnabledJobCount FROM msdb.dbo.sysjobs WHERE enabled = 1;
+  - metric_name: sql_jobs_disabled_total
+    type: gauge
+    help: Total number of disabled SQL Server Agent jobs
+    values:
+      - DisabledJobCount
+    query: >
+      SELECT COUNT(*) AS DisabledJobCount FROM msdb.dbo.sysjobs WHERE enabled =
+      0;
+  - metric_name: sql_jobs_last_completed
+    type: gauge
+    help: Last completed jobs with timestamps
+    key_labels:
+      - JobName
+      - LastRunStatus
+    values:
+      - LastRunTime
+    query: >
+      SELECT
+          j.name AS JobName,
+          CONVERT(FLOAT, DATEDIFF(SECOND, '1970-01-01',
+              CONVERT(DATETIME,
+                  CAST(h.run_date AS CHAR(8)) + ' ' +
+                  STUFF(STUFF(RIGHT('000000' + CAST(h.run_time AS VARCHAR(6)),6), 5, 0, ':'), 3, 0, ':')
+              )
+          )) AS LastRunTime,
+          CASE
+              WHEN h.run_status = 1 THEN 'Succeeded'
+              WHEN h.run_status = 0 THEN 'Failed'
+              ELSE 'Unknown'
+          END AS LastRunStatus
+      FROM msdb.dbo.sysjobs j
+
+      LEFT JOIN msdb.dbo.sysjobhistory h
+          ON j.job_id = h.job_id AND h.step_id = 0
+      WHERE h.instance_id = (
+          SELECT MAX(instance_id)
+          FROM msdb.dbo.sysjobhistory
+          WHERE job_id = j.job_id
+      )
+
+      ORDER BY LastRunTime DESC;
+  - metric_name: sql_jobs_upcoming
+    type: gauge
+    help: Upcoming scheduled jobs with timestamps
+    key_labels:
+      - JobName
+    values:
+      - NextRunTime
+    query: >
+      SELECT
+          j.name AS JobName,
+          DATEDIFF(SECOND, '1970-01-01',
+              CONVERT(DATETIME,
+                  CAST(s.next_run_date AS CHAR(8)) + ' ' +
+                  STUFF(STUFF(RIGHT('000000' + CAST(s.next_run_time AS VARCHAR(6)),6), 5, 0, ':'), 3, 0, ':')
+              )
+          ) AS NextRunTime
+      FROM msdb.dbo.sysjobs j
+
+      LEFT JOIN msdb.dbo.sysjobschedules s ON j.job_id = s.job_id
+
+      WHERE s.next_run_date > 0
+
+      ORDER BY NextRunTime ASC;
+  - metric_name: sql_long_running_jobs
+    type: gauge
+    help: SQL Server jobs running for more than 5 minutes
+    key_labels:
+      - JobName
+    values:
+      - RunDurationMinutes
+    query: >
+      SELECT
+          j.name AS JobName,
+          DATEDIFF(MINUTE, a.start_execution_date, GETDATE()) AS RunDurationMinutes
+      FROM msdb.dbo.sysjobs j
+
+      JOIN msdb.dbo.sysjobactivity a ON j.job_id = a.job_id
+
+      WHERE a.start_execution_date IS NOT NULL
+        AND a.stop_execution_date IS NULL -- Still running
+        AND DATEDIFF(MINUTE, a.start_execution_date, GETDATE()) > 5
+  - metric_name: sql_failed_jobs
+    type: gauge
+    help: SQL Server Agent failed jobs count
+    key_labels:
+      - JobName
+    values:
+      - FailureCount
+    query: >
+      SELECT
+          j.name AS JobName,
+          COUNT(h.instance_id) AS FailureCount
+      FROM msdb.dbo.sysjobs j
+
+      JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id
+
+      WHERE h.run_status = 0  -- 0 indicates job failure
+        AND h.run_date = CONVERT(INT, FORMAT(GETDATE(), 'yyyyMMdd'))  -- Today's failures
+      GROUP BY j.name
+  - metric_name: sql_logins_enabled
+    type: gauge
+    help: Count of enabled SQL Server logins
+    values:
+      - EnabledCount
+    query: |
+      SELECT COUNT(*) AS EnabledCount FROM sys.sql_logins WHERE is_disabled = 0;
+  - metric_name: sql_logins_disabled
+    type: gauge
+    help: Count of disabled SQL Server logins
+    values:
+      - DisabledCount
+    query: >
+      SELECT COUNT(*) AS DisabledCount FROM sys.sql_logins WHERE is_disabled =
+      1;
+  - metric_name: sql_enabled_logins
+    type: gauge
+    help: "List of Enabled SQL Server logins"
+    key_labels:
+      - LoginName
+    values: [IsEnabled]
+    query: |
+      SELECT name AS LoginName, 1 AS IsEnabled
+      FROM sys.sql_logins
+      WHERE is_disabled = 0;
+
+  - metric_name: sql_disabled_logins
+    type: gauge
+    help: "List of Disabled SQL Server logins"
+    key_labels:
+      - LoginName
+    values: [IsEnabled]
+    query: |
+      SELECT name AS LoginName, 0 AS IsEnabled
+      FROM sys.sql_logins
+      WHERE is_disabled = 1;
